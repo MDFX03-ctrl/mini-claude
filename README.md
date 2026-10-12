@@ -165,6 +165,7 @@ After 2 minutes without keyboard or mouse input, it switches between staying sti
 
 - **It doesn't answer:** type `/doctor`. Check that `claude` works in a terminal and that you're signed in.
 - **"I can't find Claude Code":** install Claude Code, or make sure `claude` is on your PATH (it also looks in `~\.local\bin`).
+- **Something covers it:** it puts itself back on top of other always-on-top apps every second. Only the Start menu, Windows pop-ups and full-screen games can still cover it.
 - **Fast mode turns itself off:** your account needs extra usage enabled for fast mode.
 - **It sits on something that isn't a real line:** with "lines in apps" on, it can mistake the edge of an image or video for a line. That's part of the fun; turn it off with `/lines` if you prefer.
 

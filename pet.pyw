@@ -822,6 +822,21 @@ class Pet:
             self.q.put((kind, text, info))
         threading.Thread(target=work, daemon=True).start()
 
+    def keep_on_top(self):
+        """Other always-on-top apps can push in front of it; put the pet and its typing line back on top.
+        Skipped while a menu is open, so the pet never covers it."""
+        try:
+            user32 = ctypes.windll.user32
+            user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 4 + [ctypes.c_uint]
+            menu = user32.FindWindowW("#32768", None)                # Windows' class for an open menu
+            if menu and user32.IsWindowVisible(menu):
+                return
+            for w in [self.root] + ([self.chat] if self.chat else []):
+                hwnd = int(w.wm_frame(), 16)
+                user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)   # TOPMOST; no size, move or focus
+        except Exception:
+            pass
+
     def startup_sync(self):
         """With --update-memory: ask big Claude for a fresh memory at start, once a day, if a notes folder is set."""
         if self.mem.get("workspace") and self.mem.get("last_sync") != dt.date.today().isoformat():
@@ -2455,6 +2470,8 @@ class Pet:
             self.update_state()
         if t % 30 == 15:
             self.update_mode()
+        if t % 30 == 25:
+            self.keep_on_top()
         if t % 30 == 20:
             self.update_away()
         if self.base == "sleep":

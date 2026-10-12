@@ -42,4 +42,4 @@ A floating desktop pet for Windows, written as one Python file with Tkinter. It 
 
 ## Testing
 
-There is no test suite. Tests load `pet.pyw` with `root.mainloop()` replaced by test code and `STATE_FILE` pointed at a throwaway file, then drive the pet directly (`pet.tick()`, `pet.update_view()`, `pet.draw()`). For pictures, swap `pet.c` for a fake canvas that records rectangles and lines, and rasterize them; this works even when the screen is locked. Never write test files into the real `state.json`.
+There is no test suite. Only one pet can run at a time (a named mutex, `already_running()`), so a test that runs while a pet is open must replace `if already_running():` with `if False:`. Tests load `pet.pyw` with `root.mainloop()` replaced by test code and `STATE_FILE` pointed at a throwaway file, then drive the pet directly (`pet.tick()`, `pet.update_view()`, `pet.draw()`). For pictures, swap `pet.c` for a fake canvas that records rectangles and lines, and rasterize them; this works even when the screen is locked. Never write test files into the real `state.json`.

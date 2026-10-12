@@ -3021,6 +3021,20 @@ class Pet:
         self.bubble_box = (x0, y0, x1, y1)
 
 
+def already_running():
+    """True if a Mini Claude is already open: one pet at a time. The lock goes away when the pet closes."""
+    global _one_pet
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        _one_pet = kernel32.CreateMutexW(None, False, "Local\\MiniClaudePet")
+        return ctypes.get_last_error() == 183                 # ERROR_ALREADY_EXISTS
+    except Exception:
+        return False
+
+
+if already_running():
+    sys.exit()
 root = tk.Tk()
 root.title("Mini Claude")
 S = 1.0                                         # keep it small, like the first version

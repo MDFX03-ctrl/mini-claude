@@ -1,0 +1,10 @@
+# Personal files: made on your computer, never part of the project
+state.json
+state.test.json
+pet-memory.md
+pet-memory.previous.md
+exports/
+
+# Python
+__pycache__/
+*.pyc

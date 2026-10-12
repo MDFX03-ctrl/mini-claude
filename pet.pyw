@@ -18,6 +18,7 @@ import random
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -767,6 +768,8 @@ class Pet:
         self.place()
         self.greet()
         self.tick()
+        if "--update-memory" in sys.argv:              # started with this flag (e.g. at sign-in): fresh memory today
+            root.after(20000, self.startup_sync)
 
     # ---------- memory from big Claude ----------
     def pm(self):
@@ -818,6 +821,11 @@ class Pet:
             text, info = ask_big_claude_to_update(model, workspace)
             self.q.put((kind, text, info))
         threading.Thread(target=work, daemon=True).start()
+
+    def startup_sync(self):
+        """With --update-memory: ask big Claude for a fresh memory at start, once a day, if a notes folder is set."""
+        if self.mem.get("workspace") and self.mem.get("last_sync") != dt.date.today().isoformat():
+            self.update_memory(manual=False)
 
     def maybe_sync(self):
         """Once a day at most: if the memory is over 2 days old, ask big Claude for a fresh one."""

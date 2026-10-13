@@ -34,7 +34,7 @@ A floating desktop pet for Windows, written as one Python file with Tkinter. It 
 ## Rules
 
 - **No personal data in code or docs.** Anything about a person belongs in `pet-memory.md`, which is never committed.
-- **Talking:** `claude -p` with `--safe-mode`, no tools, no MCP, no session saved. `/update` may use only Read, Glob and Grep.
+- **Talking:** `claude -p` with `--safe-mode`, no tools, no MCP, no session saved, in stream-json mode. `Brain` keeps one process started and waiting (from when the chat opens, and again after each reply), so a reply skips Claude Code's start-up; each process answers one message and then closes. The reply is shown as soon as its text arrives; cost and time come in the final `result` about 1.5 s later. The system prompt is only the persona, so it stays the same between messages; the changing context goes in the message. Every Claude process is stopped when the pet quits. `/update` may use only Read, Glob and Grep.
 - **Nothing leaves the computer** except what is sent to Claude. Screen pixels, window titles and idle time stay in memory.
 - **Draw with rectangles, not fonts,** for anything on the transparent background; font edges show a dark rim against the transparent color key.
 - **Window size changes** hide the window for a moment (`-alpha 0`), because a grown layered window is black until it is repainted.

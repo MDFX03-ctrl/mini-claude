@@ -12,6 +12,7 @@ MIT License. An unofficial fan project, not made or endorsed by Anthropic.
 import datetime as dt
 import json
 import math
+import atexit
 import os
 import queue
 import random
@@ -634,35 +635,151 @@ def find_claude():
     return p if os.path.exists(p) else None
 
 
-def ask_claude(system, prompt, model, effort=None, fast=False):
+class Brain:
+    """Keeps one Claude Code process started and waiting, so a reply doesn't wait
+    for Claude Code to start (about 3 s of each reply). Each process answers one
+    message and then closes, so nothing carries over between calls."""
+    MAX_AGE = 20 * 60                       # seconds a waiting process is kept
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.ready, self.ready_key, self.ready_at = None, None, 0.0
+        self.busy = set()                   # processes answering right now
+        atexit.register(self.close)
+
+    def _start(self, key):
+        exe, system, model, effort, fast = key
+        args = [exe, "-p", "--safe-mode", "--tools", "", "--strict-mcp-config",
+                "--no-session-persistence", "--model", model, "--system-prompt", system,
+                "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+        if effort:
+            args += ["--effort", effort]
+        if fast:
+            args += ["--settings", '{"fastMode": true}']
+        return subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=tempfile.TemporaryFile(), text=True, encoding="utf-8",
+                                errors="replace", cwd=tempfile.gettempdir(),
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+    def fits(self, key):
+        return (self.ready is not None and self.ready.poll() is None and self.ready_key == key
+                and time.monotonic() - self.ready_at < self.MAX_AGE)
+
+    def warm(self, key):
+        """Start a waiting process for the next message, unless a fitting one is ready."""
+        with self.lock:
+            if self.fits(key):
+                return
+            old, self.ready = self.ready, None
+            try:
+                self.ready, self.ready_key, self.ready_at = self._start(key), key, time.monotonic()
+            except Exception:
+                self.ready = None
+        if old:
+            kill_tree(old)
+
+    def take(self, key):
+        """The waiting process if it fits this call, otherwise a new one."""
+        with self.lock:
+            fit, p, self.ready = self.fits(key), self.ready, None
+            if not fit:
+                if p:
+                    kill_tree(p)
+                p = self._start(key)
+            self.busy.add(p)
+            return p
+
+    def done(self, p):
+        with self.lock:
+            self.busy.discard(p)
+        try:
+            p.stdin.close()
+            p.wait(timeout=10)
+        except Exception:
+            kill_tree(p)
+
+    def close(self):
+        """Stop every Claude process the pet started (on exit)."""
+        with self.lock:
+            procs = list(self.busy) + ([self.ready] if self.ready else [])
+            self.ready = None
+            self.busy.clear()
+        for p in procs:
+            kill_tree(p)
+
+
+def kill_tree(p):
+    if p.poll() is not None:
+        return
+    try:
+        if os.name == "nt":                 # claude may run under a wrapper; stop its children too
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True,
+                           timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            p.kill()
+    except Exception:
+        pass
+
+
+BRAIN = Brain()
+
+
+def brain_key(system, model, effort=None, fast=False):
+    return (find_claude(), system, MODELS.get(model, MODELS["opus"])[0], effort, bool(fast))
+
+
+def ask_claude(system, prompt, model, effort=None, fast=False, early=None):
     """One call to Claude, with no tools, no plugins and nothing saved.
+    early(text) is called as soon as the reply text arrives; Claude Code still
+    works about 1.5 s more before its final report (cost, time).
     Returns (text, info); info is None when something went wrong."""
     exe = find_claude()
     if not exe:
         return ("[sad] I can't find Claude Code on this computer, so I can't think yet. "
                 "Install it, sign in once with `claude`, then try again."), None
-    args = [exe, "-p", "--safe-mode", "--tools", "", "--strict-mcp-config",
-            "--no-session-persistence", "--model", MODELS.get(model, MODELS["opus"])[0],
-            "--system-prompt", system, "--output-format", "json"]
-    if effort:
-        args += ["--effort", effort]
-    if fast:
-        args += ["--settings", '{"fastMode": true}']
     try:
-        r = subprocess.run(args, input=prompt, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=120, cwd=tempfile.gettempdir(),
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except subprocess.TimeoutExpired:
-        return "[sleepy] Sorry, my brain took too long. Try again?", None
+        p = BRAIN.take(brain_key(system, model, effort, fast))
     except Exception as e:
         return f"[sad] Something went wrong: {e}", None
+    late = []
+    timer = threading.Timer(120, lambda: (late.append(1), kill_tree(p)))
+    timer.start()
+    text, info, sent = "", None, False
     try:
-        info = json.JSONDecoder().raw_decode((r.stdout or "").strip())[0]
-    except Exception:
-        info = None
-    text = (info or {}).get("result") or ""
-    if info is None or info.get("is_error") or r.returncode != 0 or not text.strip():
-        err = text.strip() or ((r.stderr or "").strip().splitlines() or ["no answer"])[-1]
+        p.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": prompt}}) + "\n")
+        p.stdin.flush()
+        for line in p.stdout:
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            if e.get("type") == "assistant" and not sent:
+                part = "".join(c.get("text", "") for c in (e.get("message") or {}).get("content") or []
+                               if c.get("type") == "text").strip()
+                if part:
+                    text, sent = part, True
+                    if early:
+                        early(text)
+            elif e.get("type") == "result":
+                info = e
+                break
+    except Exception as e:
+        timer.cancel()
+        BRAIN.done(p)
+        return f"[sad] Something went wrong: {e}", None
+    timer.cancel()
+    BRAIN.done(p)
+    if late and info is None:
+        return "[sleepy] Sorry, my brain took too long. Try again?", None
+    text = text or (info or {}).get("result") or ""
+    if info is None or info.get("is_error") or not text.strip():
+        err = ((info or {}).get("result") or "").strip()
+        if not err:
+            try:
+                p.stderr.seek(0)
+                err = (p.stderr.read().decode("utf-8", "replace").strip().splitlines() or ["no answer"])[-1]
+            except Exception:
+                err = "no answer"
         return f"[sad] I couldn't reach big Claude. ({err[:110]})", None
     return text.strip(), info
 
@@ -921,6 +1038,7 @@ class Pet:
         if not self.playing() and self.y + H + 44 * S > b:   # make room below for the typing line
             self.y = b - H - 44 * S
             self.place()
+        self.warm_brain()                   # Claude Code starts while you type
         self.target = None
         self.action = None
         self.chat = tk.Toplevel(self.root)
@@ -1265,9 +1383,20 @@ class Pet:
         m = self.mem
         model, effort, fast = m.get("model", "opus"), m.get("effort"), m.get("fast")
 
+        shown = []
+
+        def early(text):                    # show the reply as soon as it's written
+            shown.append(1)
+            self.q.put((kind, text, {"early": True}))
+
         def work():
-            text, info = ask_claude(system, prompt, model, effort, fast)
-            self.q.put((kind, text, info))
+            text, info = ask_claude(system, prompt, model, effort, fast, early)
+            if not shown:
+                self.q.put((kind, text, info))
+            elif info:
+                self.q.put(("usage", text, info))          # cost and time come a bit later
+            if kind in ("chat", "btw"):
+                BRAIN.warm(brain_key(system, model, effort, fast))
         threading.Thread(target=work, daemon=True).start()
 
     def send(self, e=None):
@@ -1309,18 +1438,27 @@ class Pet:
         if m["summary"]:
             context += "\n\nSummary of the earlier part of this chat: " + m["summary"]
         talk = "\n".join(f"{self.name() if who == 'you' else 'Mini Claude'}: {text}" for who, text in m["history"][-12:])
-        prompt = (f"Recent chat:\n{talk}\n\n" if talk else "") + f"{self.name()}: {msg}"
-        persona = PERSONA.format(name=self.name(), about=self.pm()["about"] or "- Not much yet. Ask big Claude to update your memory.")
-        return persona + "\n\n" + context, prompt
+        prompt = f"Context:\n{context}\n\n" + (f"Recent chat:\n{talk}\n\n" if talk else "") + f"{self.name()}: {msg}"
+        return self.persona(), prompt
 
-    def track(self, info):
+    def persona(self):
+        """The system prompt. It changes only with the name or pet-memory.md, so a
+        Claude process can be started for it before the next message."""
+        return PERSONA.format(name=self.name(), about=self.pm()["about"] or "- Not much yet. Ask big Claude to update your memory.")
+
+    def warm_brain(self):
+        m = self.mem
+        key = brain_key(self.persona(), m.get("model", "opus"), m.get("effort"), m.get("fast"))
+        threading.Thread(target=BRAIN.warm, args=(key,), daemon=True).start()
+
+    def track(self, info, count=True):
         u = self.mem["usage"]
         today = dt.date.today().isoformat()
         if u["day"] != today:
             u.update(day=today, day_replies=0, day_cost=0.0)
         cost = info.get("total_cost_usd") or 0
-        u["replies"] += 1
-        u["day_replies"] += 1
+        u["replies"] += count
+        u["day_replies"] += count
         u["cost"] += cost
         u["day_cost"] += cost
         u["ms"] += info.get("duration_ms") or 0
@@ -1331,6 +1469,13 @@ class Pet:
         except queue.Empty:
             return
         m = self.mem
+        if kind == "usage":                                      # final report after an early reply
+            self.track(info, count=False)
+            if m.get("fast") and info.get("fast_mode_state") != "on":
+                m["fast"] = False
+                self.bubble_queue += chunks("(Fast mode didn't turn on: it needs extra usage on your account. I switched it off.)")
+            self.save()
+            return
         if kind == "update-bg":                                  # quiet background refresh
             if info:
                 self.track(info)
@@ -1360,9 +1505,6 @@ class Pet:
                 m["history"] = m["history"][-30:]
             self.set_mood(mood, 30 * 4)
             self.say(text)
-            if kind == "chat" and m.get("fast") and info and info.get("fast_mode_state") != "on":
-                m["fast"] = False
-                self.bubble_queue += chunks("(Fast mode didn't turn on: it needs extra usage on your account. I switched it off.)")
         self.save()
 
     # ---------- input ----------
@@ -2102,6 +2244,7 @@ class Pet:
         self.set_mood("love", 999)
         self.spawn("heart", 4)
         self.say(f"Bye, {self.name()}! See you soon.")
+        BRAIN.close()
         self.root.after(1600, self.root.destroy)
 
     # ---------- behaviour ----------

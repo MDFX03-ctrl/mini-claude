@@ -28,7 +28,7 @@ An unofficial fan project, not made or endorsed by Anthropic. "Claude" is a trad
 
 ## Use it
 
-- **Talk:** double-click the pet. A cursor floats under it. Type and press Enter. Click elsewhere or press Esc to close it. A reply takes about 8 seconds.
+- **Talk:** double-click the pet. A cursor floats under it. Type and press Enter. Click elsewhere or press Esc to close it. A reply takes 1–3 seconds on Haiku: Claude Code starts in the background when you open the chat, so it is ready when you press Enter. Opus and Sonnet take a little longer.
 - **Long replies:** click the bubble to see the next part.
 - **Pet it:** click it. It reacts only now and then, as a little surprise.
 - **Move it:** drag it.
